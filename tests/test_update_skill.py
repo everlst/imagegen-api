@@ -27,6 +27,7 @@ SPEC = importlib.util.spec_from_file_location("tested_updater", SOURCE / "script
 UPDATER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(UPDATER)
 REVISION = "a" * 40
+REFS_URL = f"https://github.com/{UPDATER.REPOSITORY}.git/info/refs?service=git-upload-pack"
 OLD_CONFIG = b'''# Private configuration (test values only)
 [api]
 base_url = "https://images.example.invalid/v1"
@@ -58,6 +59,18 @@ def archive_bytes(files, revision=REVISION):
     return stream.getvalue()
 
 
+def git_advertisement(revision=REVISION, branch="main"):
+    """Git smart HTTP v0 advertisement, including exact hexadecimal packet sizes."""
+    def packet(payload):
+        return f"{len(payload) + 4:04x}".encode() + payload
+    return (
+        packet(b"# service=git-upload-pack\n") + b"0000"
+        + packet(f"{revision} HEAD\0multi_ack thin-pack side-band side-band-64k ofs-delta symref=HEAD:refs/heads/{branch} agent=git/test\n".encode())
+        + packet(f"{'c' * 40} refs/heads/another-branch\n".encode())
+        + packet(f"{revision} refs/heads/{branch}\n".encode()) + b"0000"
+    )
+
+
 def snapshot(directory):
     return {str(p.relative_to(directory)): (p.read_bytes(), p.stat().st_mode & 0o777)
             for p in directory.rglob("*") if p.is_file()}
@@ -73,14 +86,14 @@ class UpdateSkillTests(unittest.TestCase):
         self.manifest, self.files = release()
 
     @contextmanager
-    def remote(self, files=None, failure=None, revision=REVISION):
+    def remote(self, files=None, failure=None, revision=REVISION, refs=None):
         payload = archive_bytes(self.files if files is None else files, revision)
         def response(request, timeout):
             if failure:
                 raise URLError(failure)
             url = request.full_url
-            if url == f"https://api.github.com/repos/{UPDATER.REPOSITORY}/commits/main":
-                return io.BytesIO(json.dumps({"sha": revision}).encode())
+            if url == REFS_URL:
+                return io.BytesIO(git_advertisement(revision) if refs is None else refs)
             if url == f"https://codeload.github.com/{UPDATER.REPOSITORY}/zip/{revision}":
                 return io.BytesIO(payload)
             raise AssertionError(f"Unexpected network request: {url}")
@@ -177,6 +190,26 @@ class UpdateSkillTests(unittest.TestCase):
             UPDATER.update(self.destination)
         self.assertEqual(snapshot(self.destination), before)
 
+    def test_invalid_git_advertisement_does_not_change_existing_files(self):
+        self.legacy_install()
+        before = snapshot(self.destination)
+        responses = {
+            "not-git": b"<html>upstream error</html>",
+            "missing-main": git_advertisement(branch="other"),
+            "invalid-sha": git_advertisement(revision="z" * 40),
+            "missing-packet-framing": f"{REVISION} refs/heads/main\n".encode(),
+            "invalid-packet-length": git_advertisement().replace(b"001e# service=git-upload-pack", b"0005# service=git-upload-pack"),
+            "truncated-packet": git_advertisement()[:-8],
+            "missing-final-flush": git_advertisement()[:-4],
+            "html-with-reference": b"<html>" + f"{REVISION} refs/heads/main\n".encode() + b"</html>",
+        }
+        for name, response in responses.items():
+            with self.subTest(response=name):
+                with self.remote(refs=response) as network, self.assertRaises(UPDATER.UpdateError):
+                    UPDATER.update(self.destination)
+                self.assertEqual(network.call_count, 1)
+                self.assertEqual(snapshot(self.destination), before)
+
     def test_incomplete_archive_does_not_change_existing_files(self):
         self.legacy_install()
         before = snapshot(self.destination)
@@ -222,12 +255,14 @@ class UpdateSkillTests(unittest.TestCase):
             UPDATER.update(self.destination)
         self.assertEqual(snapshot(self.destination), before)
 
-    def cli_environment(self, fail=False, files=None, revision=REVISION):
+    def cli_environment(self, fail=False, files=None, revision=REVISION, refs=None):
         """sitecustomize survives execv; sockets are blocked even if mocks regress."""
         support = self.root / "fake-modules"
         support.mkdir(exist_ok=True)
         fixture = self.root / "release.zip"
         fixture.write_bytes(archive_bytes(self.files if files is None else files, revision))
+        refs_fixture = self.root / "git-refs.bin"
+        refs_fixture.write_bytes(git_advertisement(revision) if refs is None else refs)
         event_file = self.root / "events.jsonl"
         (support / "sitecustomize.py").write_text(textwrap.dedent('''
             import base64, io, json, os, socket, sys, types, urllib.request
@@ -246,8 +281,8 @@ class UpdateSkillTests(unittest.TestCase):
                 event({"kind": "update", "url": request.full_url})
                 if os.environ.get("REGRESSION_OFFLINE") == "1" or update_count >= int(os.environ.get("REGRESSION_FAIL_AFTER", "999")):
                     raise URLError("simulated offline")
-                if request.full_url.endswith("/commits/main"):
-                    return io.BytesIO(json.dumps({"sha": os.environ["REGRESSION_REVISION"]}).encode())
+                if request.full_url == os.environ["REGRESSION_REFS_URL"]:
+                    return io.BytesIO(Path(os.environ["REGRESSION_REFS"]).read_bytes())
                 if request.full_url.endswith("/zip/" + os.environ["REGRESSION_REVISION"]):
                     return io.BytesIO(Path(os.environ["REGRESSION_ARCHIVE"]).read_bytes())
                 raise AssertionError("Unexpected URL: " + request.full_url)
@@ -277,11 +312,12 @@ class UpdateSkillTests(unittest.TestCase):
         env = dict(os.environ, PYTHONPATH=str(support), PYTHONDONTWRITEBYTECODE="1",
                    REGRESSION_ARCHIVE=str(fixture), REGRESSION_EVENTS=str(event_file),
                    REGRESSION_REVISION=revision,
+                   REGRESSION_REFS=str(refs_fixture), REGRESSION_REFS_URL=REFS_URL,
                    REGRESSION_OFFLINE="1" if fail else "0")
         return env, event_file
 
-    def cli(self, command, fail=False, flags=(), fail_after=None, files=None, revision=REVISION):
-        env, event_file = self.cli_environment(fail, files, revision)
+    def cli(self, command, fail=False, flags=(), fail_after=None, files=None, revision=REVISION, refs=None):
+        env, event_file = self.cli_environment(fail, files, revision, refs)
         if fail_after is not None:
             env["REGRESSION_FAIL_AFTER"] = str(fail_after)
         output = self.root / f"result-{command}.png"
@@ -340,6 +376,18 @@ class UpdateSkillTests(unittest.TestCase):
                 self.assertFalse(any(entry["kind"] == "image" for entry in events))
                 self.assertEqual(snapshot(self.destination), before)
 
+    def test_actual_cli_invalid_git_advertisement_never_calls_image_endpoint(self):
+        self.copy_current_with_old_config()
+        before = snapshot(self.destination)
+        for invalid_refs in (git_advertisement(branch="other"), b"<html>upstream error</html>", git_advertisement()[:-8]):
+            for command in ("generate", "edit", "generate-batch"):
+                with self.subTest(command=command, refs=invalid_refs[:20]):
+                    (self.root / "events.jsonl").unlink(missing_ok=True)
+                    process, events = self.cli(command, refs=invalid_refs)
+                    self.assertNotEqual(process.returncode, 0)
+                    self.assertEqual(events, [{"kind": "update", "url": REFS_URL}])
+                    self.assertEqual(snapshot(self.destination), before)
+
     def test_update_check_failure_after_reexec_still_blocks_image_request(self):
         self.copy_current_with_old_config()
         process, events = self.cli("generate", fail_after=2)
@@ -395,7 +443,7 @@ class UpdateSkillTests(unittest.TestCase):
 
     def test_future_release_reloads_changed_code_and_models_then_remains_idempotent(self):
         """Two actual releases, different SHAs, and observable new Python code."""
-        self.assertEqual(self.manifest["version"], "1.1.0")
+        initial_version = self.manifest["version"]
         next_revision = "b" * 40
         next_manifest = copy.deepcopy(self.manifest)
         next_manifest.update(version="1.2.0", models={
@@ -425,7 +473,7 @@ class UpdateSkillTests(unittest.TestCase):
                      "install", "--dest", str(self.destination)],
                     cwd=self.root, env=env, capture_output=True, text=True, timeout=30)
                 self.assertEqual(installed.returncode, 0, installed.stderr)
-                self.assertEqual(json.loads(installed.stdout)["version"], "1.1.0")
+                self.assertEqual(json.loads(installed.stdout)["version"], initial_version)
                 self.assertEqual(json.loads((self.destination / UPDATER.STATE_FILE).read_text())["revision"], REVISION)
                 config_path = self.destination / "config.local.toml"
                 initial_config = UPDATER.migrate_config(OLD_CONFIG, self.manifest["models"])
@@ -440,9 +488,9 @@ class UpdateSkillTests(unittest.TestCase):
                 self.assertIn("Updated imagegen-api to 1.2.0; reloading", process.stderr)
                 updates = [event["url"] for event in events if event["kind"] == "update"]
                 self.assertEqual(updates, [
-                    f"https://api.github.com/repos/{UPDATER.REPOSITORY}/commits/main",
+                    REFS_URL,
                     f"https://codeload.github.com/{UPDATER.REPOSITORY}/zip/{next_revision}",
-                    f"https://api.github.com/repos/{UPDATER.REPOSITORY}/commits/main",
+                    REFS_URL,
                 ])
                 images = [event for event in events if event["kind"] == "image"]
                 self.assertEqual(images, [{
@@ -473,7 +521,7 @@ class UpdateSkillTests(unittest.TestCase):
                 self.assertEqual(repeated.stderr.count(marker), 1, repeated.stderr)
                 self.assertNotIn("reloading", repeated.stderr)
                 self.assertEqual([event for event in events if event["kind"] == "update"], [{
-                    "kind": "update", "url": f"https://api.github.com/repos/{UPDATER.REPOSITORY}/commits/main",
+                    "kind": "update", "url": REFS_URL,
                 }])
                 self.assertEqual([event for event in events if event["kind"] == "image"], images)
                 self.assertEqual(snapshot(self.destination), after_snapshot)

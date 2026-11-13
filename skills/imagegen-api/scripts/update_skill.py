@@ -73,7 +73,7 @@ def _read_manifest(path: Path) -> dict:
 
 
 def _download(url: str) -> bytes:
-    request = Request(url, headers={"User-Agent": "imagegen-api-updater", "Accept": "application/vnd.github+json"})
+    request = Request(url, headers={"User-Agent": "imagegen-api-updater"})
     try:
         with urlopen(request, timeout=15) as response:
             payload = response.read(MAX_DOWNLOAD + 1)
@@ -85,13 +85,31 @@ def _download(url: str) -> bytes:
 
 
 def latest_revision() -> str:
-    try:
-        revision = json.loads(_download(f"https://api.github.com/repos/{REPOSITORY}/commits/main"))["sha"]
-    except (ValueError, TypeError, KeyError) as exc:
-        raise UpdateError("GitHub returned an invalid revision.") from exc
-    if not re.fullmatch(r"[0-9a-f]{40}", revision):
-        raise UpdateError("GitHub returned an invalid commit SHA.")
-    return revision
+    # Git's read-only ref advertisement needs neither a Git executable nor a REST API token.
+    advertisement = _download(f"https://github.com/{REPOSITORY}.git/info/refs?service=git-upload-pack")
+    packets = []
+    offset = 0
+    while offset < len(advertisement):
+        header = advertisement[offset:offset + 4]
+        if not re.fullmatch(rb"[0-9a-fA-F]{4}", header):
+            raise UpdateError("GitHub returned an invalid Git ref advertisement.")
+        length = int(header, 16)
+        if length == 0:
+            packets.append(b"")
+            offset += 4
+        elif length >= 4 and offset + length <= len(advertisement):
+            packets.append(advertisement[offset + 4:offset + length])
+            offset += length
+        else:
+            raise UpdateError("GitHub returned a truncated Git ref advertisement.")
+    if len(packets) < 4 or packets[:2] != [b"# service=git-upload-pack\n", b""] or packets[-1] != b"":
+        raise UpdateError("GitHub returned an invalid Git service response.")
+    for packet in packets[2:-1]:
+        reference = packet.split(b"\x00", 1)[0].rstrip(b"\n")
+        match = re.fullmatch(rb"([0-9a-f]{40}) refs/heads/main", reference)
+        if match:
+            return match.group(1).decode("ascii")
+    raise UpdateError("GitHub did not advertise a valid main branch revision.")
 
 
 def download_release(revision: str) -> tuple[dict, dict[str, bytes]]:
