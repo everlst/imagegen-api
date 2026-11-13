@@ -4,6 +4,9 @@
 **/config.local.toml
 **/.venv/
 **/__pycache__/
+**/.update-state.json
+**/.imagegen-api-backups/
+**/.imagegen-api.update.lock
 *.py[cod]
 .DS_Store
 .env

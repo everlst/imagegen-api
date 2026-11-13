@@ -1,4 +1,5 @@
 /config.local.toml
+/.update-state.json
 /.venv/
 /output/
 /outputs/

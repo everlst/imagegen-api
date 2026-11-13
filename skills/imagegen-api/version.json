@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "name": "imagegen-api",
+  "version": "1.1.0",
+  "models": {
+    "generate": "gpt-image-2.6-flare",
+    "edit": "gpt-image-2.6-sunburst"
+  },
+  "files": [
+    ".gitignore",
+    "SKILL.md",
+    "agents/openai.yaml",
+    "config.example.toml",
+    "references/configuration.md",
+    "requirements.txt",
+    "scripts/image_gen.py",
+    "scripts/update_skill.py"
+  ]
+}

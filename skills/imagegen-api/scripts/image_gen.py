@@ -11,6 +11,7 @@ import argparse
 import asyncio
 import base64
 import json
+import os
 from pathlib import Path
 import re
 import sys
@@ -21,41 +22,27 @@ from urllib.parse import urlsplit
 
 from io import BytesIO
 
-DEFAULT_MODEL = "gpt-image-2.6-flare"
-DEFAULT_EDIT_MODEL = "gpt-image-2.6-sunburst"
+SKILL_ROOT = Path(__file__).resolve().parents[1]
+RELEASE = json.loads((SKILL_ROOT / "version.json").read_text(encoding="utf-8"))
+DEFAULT_MODEL = RELEASE["models"]["generate"]
+DEFAULT_EDIT_MODEL = RELEASE["models"]["edit"]
 DEFAULT_SIZE = "auto"
 DEFAULT_QUALITY = "max"
 DEFAULT_OUTPUT_FORMAT = "png"
 DEFAULT_CONCURRENCY = 5
 DEFAULT_DOWNSCALE_SUFFIX = "-web"
 DEFAULT_OUTPUT_PATH = "output/imagegen/output.png"
-DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.local.toml"
+DEFAULT_CONFIG_PATH = SKILL_ROOT / "config.local.toml"
 ACTIVE_CONFIG: Dict[str, Any] = {}
 
-ALLOWED_LEGACY_SIZES = {"1024x1024", "1536x1024", "1024x1536", "auto"}
-ALLOWED_QUALITIES = {"low", "medium", "high", "auto"}
-SUNBURST_FLARE_QUALITIES = ALLOWED_QUALITIES | {"xhigh", "max"}
+ALLOWED_QUALITIES = {"low", "medium", "high", "xhigh", "max", "auto"}
 ALLOWED_BACKGROUNDS = {"transparent", "opaque", "auto", None}
-ALLOWED_INPUT_FIDELITIES = {"low", "high", None}
 
-GPT_IMAGE_2_MODEL = "gpt-image-2"
-GPT_IMAGE_2_MODELS = {GPT_IMAGE_2_MODEL, "gpt-image-2-2026-04-21"}
-GPT_IMAGE_25_MODELS = {
-    "gpt-image-2.5-sunburst",
-    "gpt-image-2.5-sunburst-2026-09-08",
-    "gpt-image-2.5-flare",
-    "gpt-image-2.5-flare-2026-09-08",
-}
-GPT_IMAGE_26_MODELS = {
-    "gpt-image-2.6-sunburst",
-    "gpt-image-2.6-flare",
-}
-SUNBURST_FLARE_MODELS = GPT_IMAGE_25_MODELS | GPT_IMAGE_26_MODELS
-FLEXIBLE_SIZE_MODELS = GPT_IMAGE_2_MODELS | SUNBURST_FLARE_MODELS
-GPT_IMAGE_2_MIN_PIXELS = 655_360
-GPT_IMAGE_2_MAX_PIXELS = 8_294_400
-GPT_IMAGE_2_MAX_EDGE = 3840
-GPT_IMAGE_2_MAX_RATIO = 3.0
+CURRENT_MODELS = set(RELEASE["models"].values())
+MIN_IMAGE_PIXELS = 655_360
+MAX_IMAGE_PIXELS = 8_294_400
+MAX_IMAGE_EDGE = 3840
+MAX_IMAGE_RATIO = 3.0
 
 MAX_IMAGE_BYTES = 50 * 1024 * 1024
 MAX_BATCH_JOBS = 500
@@ -120,12 +107,6 @@ def _load_config(path: Path) -> Dict[str, Any]:
     return config
 
 
-def _is_sunburst_flare_model(model: str) -> bool:
-    aliases = set(ACTIVE_CONFIG.get("models", {}).values())
-    legacy = GPT_IMAGE_2_MODELS | {"gpt-image-1", "gpt-image-1.5", "gpt-image-1-mini"}
-    return model in SUNBURST_FLARE_MODELS or (model in aliases and model not in legacy)
-
-
 def _ensure_api_key(dry_run: bool) -> None:
     api = ACTIVE_CONFIG.get("api", {})
     missing = [name for name in ("base_url", "api_key") if not api.get(name)]
@@ -158,6 +139,8 @@ def _check_config(args: argparse.Namespace) -> None:
         _validate_size(ACTIVE_CONFIG["defaults"]["size"], model)
     _normalize_output_format(ACTIVE_CONFIG["defaults"]["output_format"])
     print(json.dumps({
+        "skill_version": RELEASE["version"],
+        "automatic_updates": True,
         "config_file": ACTIVE_CONFIG["path"],
         "base_url": ACTIVE_CONFIG["api"]["base_url"] or None,
         "api_key_set": bool(ACTIVE_CONFIG["api"]["api_key"]),
@@ -223,35 +206,27 @@ def _validate_flexible_size(size: str, model: str) -> None:
     min_edge = min(width, height)
     total_pixels = width * height
 
-    if max_edge > GPT_IMAGE_2_MAX_EDGE:
+    if max_edge > MAX_IMAGE_EDGE:
         _die(
             f"{model} size maximum edge length must be less than or equal to 3840px."
         )
     if width % 16 != 0 or height % 16 != 0:
         _die(f"{model} size width and height must be multiples of 16px.")
-    if max_edge / min_edge > GPT_IMAGE_2_MAX_RATIO:
+    if max_edge / min_edge > MAX_IMAGE_RATIO:
         _die(f"{model} size long edge to short edge ratio must not exceed 3:1.")
-    if total_pixels < GPT_IMAGE_2_MIN_PIXELS or total_pixels > GPT_IMAGE_2_MAX_PIXELS:
+    if total_pixels < MIN_IMAGE_PIXELS or total_pixels > MAX_IMAGE_PIXELS:
         _die(
             f"{model} size total pixels must be at least 655,360 and no more than 8,294,400."
         )
 
 
 def _validate_size(size: str, model: str) -> None:
-    if model in FLEXIBLE_SIZE_MODELS or _is_sunburst_flare_model(model):
-        _validate_flexible_size(size, model)
-        return
-
-    if size not in ALLOWED_LEGACY_SIZES:
-        _die(
-            "size must be one of 1024x1024, 1536x1024, 1024x1536, or auto for this GPT Image model."
-        )
+    _validate_flexible_size(size, model)
 
 
 def _validate_quality(quality: str, model: str) -> None:
-    allowed = SUNBURST_FLARE_QUALITIES if _is_sunburst_flare_model(model) else ALLOWED_QUALITIES
-    if quality not in allowed:
-        _die(f"quality for {model} must be one of {', '.join(sorted(allowed))}.")
+    if quality not in ALLOWED_QUALITIES:
+        _die(f"quality for {model} must be one of {', '.join(sorted(ALLOWED_QUALITIES))}.")
 
 
 def _validate_background(background: Optional[str]) -> None:
@@ -259,33 +234,15 @@ def _validate_background(background: Optional[str]) -> None:
         _die("background must be one of transparent, opaque, or auto.")
 
 
-def _validate_input_fidelity(input_fidelity: Optional[str]) -> None:
-    if input_fidelity not in ALLOWED_INPUT_FIDELITIES:
-        _die("input-fidelity must be one of low or high.")
-
-
 def _validate_model(model: str) -> None:
-    if not model or any(char.isspace() for char in model):
-        _die("model must be a non-empty provider model ID without whitespace.")
+    if model not in CURRENT_MODELS:
+        _die(f"Use the current release models: {', '.join(sorted(CURRENT_MODELS))}. "
+             "Run scripts/update_skill.py update to update the skill and migrate model settings.")
 
 
 def _validate_transparency(background: Optional[str], output_format: str) -> None:
     if background == "transparent" and output_format not in {"png", "webp"}:
         _die("transparent background requires output-format png or webp.")
-
-
-def _validate_model_specific_options(
-    *,
-    model: str,
-    background: Optional[str],
-    input_fidelity: Optional[str] = None,
-) -> None:
-    if model not in FLEXIBLE_SIZE_MODELS and not _is_sunburst_flare_model(model):
-        return
-    if input_fidelity is not None:
-        _die(
-            f"Omit input_fidelity for {model}; use the model's default image-input handling."
-        )
 
 
 def _validate_generate_payload(payload: Dict[str, Any]) -> None:
@@ -300,7 +257,6 @@ def _validate_generate_payload(payload: Dict[str, Any]) -> None:
     _validate_size(size, model)
     _validate_quality(quality, model)
     _validate_background(background)
-    _validate_model_specific_options(model=model, background=background)
     oc = payload.get("output_compression")
     if oc is not None and not (0 <= int(oc) <= 100):
         _die("output_compression must be between 0 and 100")
@@ -928,7 +884,6 @@ def _edit(args: argparse.Namespace) -> None:
         "background": args.background,
         "output_format": args.output_format,
         "output_compression": args.output_compression,
-        "input_fidelity": args.input_fidelity,
         "moderation": args.moderation,
     }
     payload = {k: v for k, v in payload.items() if v is not None}
@@ -936,7 +891,6 @@ def _edit(args: argparse.Namespace) -> None:
     output_format = _normalize_output_format(args.output_format)
     _validate_transparency(args.background, output_format)
     payload["output_format"] = output_format
-    _validate_input_fidelity(args.input_fidelity)
     output_paths = _build_output_paths(args.out, output_format, args.n, args.out_dir)
     downscaled = None
     if args.downscale_max_dim is not None:
@@ -1115,13 +1069,22 @@ def main() -> int:
     _add_shared_args(edit_parser)
     edit_parser.add_argument("--image", action="append", required=True)
     edit_parser.add_argument("--mask")
-    edit_parser.add_argument("--input-fidelity")
     edit_parser.set_defaults(func=_edit, model=ACTIVE_CONFIG["models"]["edit"])
 
     args = parser.parse_args()
     if args.command == "check-config":
         args.func(args)
         return 0
+    if not args.dry_run:
+        from update_skill import update, UpdateError
+
+        try:
+            result = update(SKILL_ROOT, Path(config_args.config))
+        except UpdateError as exc:
+            _die(str(exc))
+        if result["changed"]:
+            print(f"Updated imagegen-api to {result['version']}; reloading current model settings.", file=sys.stderr)
+            os.execv(sys.executable, [sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]])
     if args.n < 1 or args.n > 10:
         _die("--n must be between 1 and 10")
     if getattr(args, "concurrency", 1) < 1 or getattr(args, "concurrency", 1) > 25:
@@ -1144,11 +1107,6 @@ def main() -> int:
     _validate_size(args.size, args.model)
     _validate_quality(args.quality, args.model)
     _validate_background(args.background)
-    _validate_model_specific_options(
-        model=args.model,
-        background=args.background,
-        input_fidelity=getattr(args, "input_fidelity", None),
-    )
     _ensure_api_key(args.dry_run)
 
     args.func(args)

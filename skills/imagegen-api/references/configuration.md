@@ -5,7 +5,7 @@
 ## 首次配置
 
 1. 选择 Python 3.11+ 环境，遵循用户或项目已有的环境约定。依赖通过该解释器安装：`python -m pip install -r requirements.txt`。
-2. 将技能根目录的 `config.example.toml` 复制为 `config.local.toml`，已有配置时保留原文件。
+2. 先运行安装/更新入口。没有配置时会创建 `config.local.toml`；已有配置时保留接口、密钥和其他参数，并自动迁移模型字段。
 3. 请用户在本机编辑器填写服务地址和密钥，不要求在聊天中粘贴密钥。在 macOS / Linux 上执行 `chmod 600 config.local.toml`，限制为当前用户可读写。
 
 配置结构如下；空字符串需要用户填写：
@@ -29,7 +29,29 @@ output_format = "png"
 
 `api_key` 填该服务颁发的密钥。不要把实际密钥放入聊天、命令行参数、技能正文或分享包。`config.local.toml` 已被 `.gitignore` 忽略。
 
-`generate` 和 `edit` 是发送给服务商的模型 ID。不同服务的别名可直接在此填写。单次请求可用 `--model`、`--quality`、`--size`、`--output-format` 覆盖配置。Image 2.6 的 `complexity` 不写入当前配置，脚本省略该字段，沿用官方默认 `high`。
+`generate` 和 `edit` 由 `version.json` 定义，并在安装和更新时同步到本地配置。模型跟随仓库最新发布版本，不继续使用旧型号。单次请求可用 `--model` 在当前 Flare / Sunburst 之间选择，并用 `--quality`、`--size`、`--output-format` 覆盖输出参数。Image 2.6 的 `complexity` 不写入当前配置，脚本省略该字段，沿用官方默认 `high`。
+
+## 安装和自动更新
+
+安装或重新安装时，下载仓库最新的 `skills/imagegen-api/scripts/update_skill.py`，使用已选择的 Python 3.11+ 解释器执行：
+
+```bash
+python /path/to/downloaded/update_skill.py install
+```
+
+默认复用检测到的已有安装；自定义或项目级安装须传 `--dest /absolute/path/to/imagegen-api`，该路径是技能本身的目录。如果发现多个同名安装，选择宿主实际加载的目录，避免更新了另一个副本。首次安装使用当前 Codex home 下的 `skills/imagegen-api`。
+
+已安装新版时可主动检查并更新：
+
+```bash
+python scripts/update_skill.py update
+```
+
+更新检查和自动更新默认启用：每次真实生成、编辑或批量任务前检查 `everlst/imagegen-api` 的 main 提交，更新后重载再发起图片请求。同一批量任务只在开始时检查；`check-config`、帮助和 `--dry-run` 不联网。更新接口不会收到图片服务的 API 密钥。
+
+升级同时覆盖托管的技能文件，并把 `[models]` 迁移到 `version.json` 中的型号。`[api]`、`[defaults]`、文件权限、虚拟环境和用户文件保留。备份保存在安装目录旁的 `.imagegen-api-backups/` 私有 ZIP 文件中，可能包含旧配置密钥，只保留在本机。失败时停止并说明原因，不静默使用旧版本或旧型号。`--config` 指定的独立配置也会在该次真实调用前迁移模型字段。
+
+安装或更新完成后必须执行 `check-config`，核对实际安装路径、`skill_version`、`automatic_updates` 和两个模型；不能只凭“目录已存在”或 SKILL.md 中的版本文字宣称完成。接口尚未填写时说明缺少字段，继续执行可选全局偏好询问。已有配置时，用一次 `generate --dry-run` 确认最终请求的型号；此步骤不生成图片。
 
 ## 检查配置
 
@@ -39,7 +61,7 @@ output_format = "png"
 python scripts/image_gen.py check-config
 ```
 
-成功时显示 `api_key_set: true`、地址、模型和默认参数，退出码为 0。该命令不联网，也不显示密钥；缺少地址或密钥时以非零状态退出。
+成功时显示 `skill_version`、`automatic_updates: true`、`api_key_set: true`、地址、模型和默认参数，退出码为 0。该命令不联网，也不显示密钥；缺少地址或密钥时以非零状态退出。
 
 离线检查一次图片请求：
 
