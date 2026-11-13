@@ -7,6 +7,10 @@ description: "通过用户配置的 OpenAI 兼容 Images API 生成或编辑高�
 
 使用本技能自己的 `scripts/image_gen.py` 和 `config.local.toml`。不依赖系统 imagegen 技能，也不修改它。
 
+## 安装后配置
+
+处理安装后配置或首次配置任务时，读取 [references/configuration.md](references/configuration.md)，执行其中的“可选配置：全局图片默认方式”：先展示实际目标路径和待合并的规则，再由 Codex 询问是否添加到全局 `AGENTS.md`，得到明确同意后才写入。已存在等效规则时无需重复添加；跳过或尚未答复时不写入。本步骤由 Codex 对话执行，不由图片脚本自动修改全局文件；普通出图和修图任务不重复询问此选项。
+
 ## 默认行为
 
 - 首次出图、重新创作、新的独立变体：使用配置中的 `models.generate`，默认值为 `gpt-image-2.6-flare`。

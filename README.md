@@ -14,12 +14,24 @@
 在 Codex 中发送：
 
 ```text
-$skill-installer 从 https://github.com/everlst/imagegen-api/tree/main/skills/imagegen-api 安装这个技能。
+$skill-installer 从 https://github.com/everlst/imagegen-api/tree/main/skills/imagegen-api 安装这个技能。安装完成后，读取已安装技能的 SKILL.md 和 references/configuration.md，继续执行安装后配置，并询问我是否将其中的图片生成偏好添加到全局 AGENTS.md；我明确同意后再写入。
 ```
 
 也可以克隆本仓库，把完整的 `skills/imagegen-api` 文件夹复制到 Codex 的技能目录。当前官方文档的用户级目录是 `~/.agents/skills/`，项目级目录是 `.agents/skills/`；内置安装器会选择其宿主使用的目录。安装后从 Codex 显示的技能路径定位文件，避免重复安装到多个目录。
 
 Codex 会自动发现技能；未显示时重启 Codex。参考[官方技能安装说明](https://learn.chatgpt.com/docs/build-skills)。
+
+### 可选：设为全局图片默认方式
+
+使用上面的安装提示词时，Codex 会在安装后展示待添加的三条规则和全局 `AGENTS.md` 的实际路径，再询问是否添加。选择添加后，AI 出图与修图会默认使用 `imagegen-api`，包括网站配图和其他技能中的图片任务；已有 SVG、矢量图标、确定性代码图形的修改，以及绘图库数据图表不受此规则影响。
+
+Codex 仅在明确同意后备份并合并规则，保留原有内容，避免重复添加。选择跳过或没有答复时不修改全局配置，仍可通过 `$imagegen-api` 使用技能。具体规则见[全局偏好配置](skills/imagegen-api/references/configuration.md#可选配置全局图片默认方式)。
+
+手动复制技能，或先前只完成下载的用户，可在 Codex 中发送：
+
+```text
+$imagegen-api 请执行安装后配置，并询问我是否将图片生成偏好添加到全局 AGENTS.md。
+```
 
 ## 配置
 
