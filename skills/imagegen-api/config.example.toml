@@ -1,0 +1,13 @@
+# Copy to config.local.toml and fill in your own service details locally.
+[api]
+base_url = ""
+api_key = ""
+
+[models]
+generate = "gpt-image-2.6-flare"
+edit = "gpt-image-2.6-sunburst"
+
+[defaults]
+quality = "max"
+size = "auto"
+output_format = "png"

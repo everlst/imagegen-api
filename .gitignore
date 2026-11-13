@@ -1,0 +1,10 @@
+/AGENTS.md
+/work/
+/outputs/
+**/config.local.toml
+**/.venv/
+**/__pycache__/
+*.py[cod]
+.DS_Store
+.env
+.env.*

@@ -1,0 +1,4 @@
+interface:
+  display_name: "ImageGen API"
+  short_description: "使用自定义 OpenAI 兼容接口生成与编辑高质量图像"
+  default_prompt: "使用 $imagegen-api 生成或修改图片，按已配置的接口和模型执行。"
